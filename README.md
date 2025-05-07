@@ -110,28 +110,17 @@ crops=detector.get_crops(img,word_boxes)
 
 
 # **Deployment**
-* ```cd deployment```: change directory to deployment folder
-* change the configs as required in ```config.py```
-
-```python
-# This port will be used by the api_ocr.py 
-OCR_API_PORT=3032
-# This api address is diplayed after deploying api_ocr.py and this is used in app.py  
-OCR_API="http://172.20.4.53:3032/ocr"
-```
-* running the api and app:
+* running the app:
 
 ```bash
-python api_ocr.py # deploys at port 3032 by defautl
 streamlit run app.py --server.port 3033 # deploys streamlit built frontend at 3033 port
 ```
-* The **api_ocr.py** lets the api to be used without any UI (a postman screenshot is attached below)
 
-![](/deployment/images/api_ocr.png) 
+![](/usage/images/ss1.png) 
 
 * The **app.py** runs a streamlit UI 
 
-![](/deployment/images/app.png) 
+![](/usage/images/ss2.png) 
 
 
 
