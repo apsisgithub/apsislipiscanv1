@@ -42,6 +42,7 @@ It is recommended to use conda environment . Specially for GPU.
 ```bash
 conda install cudatoolkit
 conda install cudnn
+# conda install cudatoolkit=11.3.1 -c nvidia <--- install this if loading gives issue
 ```
 
 * **installing packages**
@@ -121,6 +122,15 @@ streamlit run app.py --server.port 3033 # deploys streamlit built frontend at 30
 * The **app.py** runs a streamlit UI 
 
 ![](/usage/images/ss2.png) 
+
+
+# DB setup
+
+```bash
+pip install sqlalchemy
+conda install -c conda-forge psycopg2
+pip install loguru
+```
 
 
 
