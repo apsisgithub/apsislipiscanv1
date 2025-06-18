@@ -63,7 +63,7 @@ class ImageOCR(object):
 
 
     
-    def __call__(self, image: Union[str, np.ndarray]) -> dict:
+    def __call__(self, image: Union[str, np.ndarray],retun_text_data_only=False) -> dict:
         """
         Processes an image with YOLO for object detection and OCR for text recognition.
 
@@ -89,5 +89,8 @@ class ImageOCR(object):
         # Perform OCR on the image
         words,rotation_data= self.process_ocr(image)
         
-        return {"words":words,"rotation":rotation_data}
+        if retun_text_data_only:
+            return words
+        else:
+            return {"words":words,"rotation":rotation_data}
 
