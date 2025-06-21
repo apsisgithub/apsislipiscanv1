@@ -44,22 +44,24 @@ class ImageOCR(object):
         """
         # extract word regions
         regions=self.detector.get_word_boxes(image)
-        # correct for rotation
-        rotated_image,rotated_mask,angle,rotated_polys=auto_correct_image_orientation(image,regions)
-        # get word crops
-        crops=self.detector.get_crops(rotated_image,rotated_polys)
-        # get text
-        texts=self.bn_rec.infer(crops)
-        # get word and line number
-        words=[{"poly":poly,"text":txt} for poly,txt in zip(rotated_polys,texts)]
-        words=assign_line_word_numbers(words)
-        # format output data
-        rotation_data={ "rotated_image":rotated_image,
-                        "rotated_mask":rotated_mask,
-                        "angle":angle}
-        
-        return words,rotation_data
-
+        if len(regions) > 0:
+            # correct for rotation
+            rotated_image,rotated_mask,angle,rotated_polys=auto_correct_image_orientation(image,regions)
+            # get word crops
+            crops=self.detector.get_crops(rotated_image,rotated_polys)
+            # get text
+            texts=self.bn_rec.infer(crops)
+            # get word and line number
+            words=[{"poly":poly,"text":txt} for poly,txt in zip(rotated_polys,texts)]
+            words=assign_line_word_numbers(words)
+            # format output data
+            rotation_data={ "rotated_image":rotated_image,
+                            "rotated_mask":rotated_mask,
+                            "angle":angle}
+            
+            return words,rotation_data
+        else:
+            return None,None
 
 
     

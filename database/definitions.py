@@ -1,6 +1,12 @@
 import sys
 import pandas as pd
-from sqlalchemy import select, insert, delete, update, Column, Integer, String, Float, LargeBinary, DateTime, Boolean, PrimaryKeyConstraint, ForeignKeyConstraint
+from sqlalchemy import (select, insert, delete, update, 
+                        Column, Integer, String, Float, 
+                        LargeBinary, DateTime, Boolean, 
+                        PrimaryKeyConstraint, Index,  
+                        ForeignKeyConstraint,
+                        UniqueConstraint,text)
+
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import and_, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -18,23 +24,34 @@ class Base(DeclarativeBase):
 
 class UserTable(Base):
     __tablename__ = "user_table"
-
-    user_id   = Column(String, nullable=False)
+    
+    user_id = Column(String, nullable=False)
+    platform= Column(String, nullable=False)
+    userIdentifier   = Column(String, nullable=False)
     user_name = Column(String,nullable=False)
     user_email= Column(String,nullable=False)
     registered= Column(DateTime,nullable=False)
     last_login= Column(DateTime,nullable=True)
     remark    = Column(String, nullable=True)  
     
-    # Define composite primary key
     __table_args__ = (
-        PrimaryKeyConstraint('user_id',"user_email"),
+        PrimaryKeyConstraint('user_id', name='pk_user_table'),
+        # Conditional uniqueness using Index
+        Index('uq_google_user_email', # Index name
+              'user_email',          # Column(s) in the index
+              unique=True,
+              postgresql_where=text("platform = 'google'")),
+        Index('uq_apple_user_identifier', # Index name
+              'userIdentifier',           # Column(s) in the index
+              unique=True,
+              postgresql_where=text("platform = 'apple'")),
     )
 
     def __repr__(self) -> str:
         return (
-            f"passage_id={self.passage_id!r}, text='{self.text[:50]}...', data='{self.data[:50]}'" # Truncate text for brevity
-            f"start={self.start!r},end={self.end!r}"
+            f"<UserTable(user_id={self.user_id!r}, platform={self.platform!r}, "
+            f"user_name={self.user_name!r}, user_email={self.user_email!r}, "
+            f"userIdentifier={self.userIdentifier!r})>"
         )
 
 

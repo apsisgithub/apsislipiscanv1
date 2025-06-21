@@ -174,8 +174,7 @@ class SQLDatabaseManager:
         logger.info(f"Attempting to insert {len(insert_data)} rows into {self.user_table.table.name}.")
         if not hasattr(self, 'user_table'):
             logger.error("User table is not initialized in SQLDatabaseManager.")
-            sys.exit(-1)
-
+            
         return_code = self.user_table.insert(insert_data)
 
         if return_code == 0:
@@ -199,259 +198,264 @@ def sql_table_names(engine):
     return table_names
 
 
-def check_existing_user(db: SQLDatabaseManager, user_email: str) -> pd.DataFrame:
+def check_existing_user(db: 'SQLDatabaseManager', platform: str, platform_identifier: str) -> pd.DataFrame:
     """
-    Checks if a user with the specified email address exists in the user_table.
+    Checks if a user exists based on their platform and platform-specific unique identifier.
 
-    This function queries the 'user_table' in the database managed by the 'db'
-    instance. It specifically looks for rows where the 'user_email' column
-    matches the provided 'user_email' string.
+    - For 'google', platform_identifier is the user's email address (checked against 'user_email' column).
+    - For 'apple', platform_identifier is the user's Apple User ID (checked against 'userIdentifier' column).
 
     Args:
-        db (SQLDatabaseManager): An instance of the SQLDatabaseManager class,
-            which provides access to the database and its tables. It is expected
-            that `db.user_table` is an initialized SQLTable instance representing
-            the 'user_table'.
-        user_email (str): The email address to search for in the 'user_email'
-            column of the 'user_table'.
+        db (SQLDatabaseManager): The database manager instance.
+        platform (str): The platform of the user (e.g., 'google', 'apple').
+        platform_identifier (str): The unique identifier for the user on that platform.
 
     Returns:
-        pd.DataFrame:
-            - If one or more users are found with the given 'user_email', the
-              DataFrame will contain the full row(s) for those users from the
-              'user_table'.
-            - If no user is found with the given 'user_email', an empty
-              Pandas DataFrame (with columns defined but no rows) is returned.
-            - In case of a database error during the select operation, the
-              underlying `SQLTable.select` method is designed to log the error
-              and call `sys.exit(-1)`, so the program would terminate before
-              this function returns in such a scenario.
+        pd.DataFrame: DataFrame containing the user row if found (should be 0 or 1 row
+                      due to unique constraints), else an empty DataFrame.
     """
-    # 1. Accessing the User Table Object:
-    #   `db` is an instance of `SQLDatabaseManager`.
-    #   `db.user_table` is an attribute of `SQLDatabaseManager` that holds an
-    #   instance of `SQLTable`. This `SQLTable` instance is specifically configured
-    #   to operate on the database table defined by `UserTable.__table__` (which is "user_table").
-    #   So, `db.user_table` gives us the object to interact with the "user_table".
+    logger.info(f"Checking for existing user on platform: '{platform}' with platform-specific identifier: '{platform_identifier}'")
 
-    # 2. Calling the `select` Method:
-    #   `db.user_table.select(...)` calls the `select` method of the `SQLTable` class.
-    #   This method is designed to retrieve data from the associated SQL table.
+    condition_dict = {"platform": platform}
+    identifier_column_for_query = ""
 
-    # 3. Specifying the Condition:
-    #   `condition_dict={"user_email": user_email}` is passed as an argument.
-    #   The `SQLTable.select` method interprets this dictionary to build a
-    #   SQL WHERE clause. For this specific input, it will construct a condition
-    #   equivalent to: `WHERE user_table.user_email = 'the_value_of_user_email_variable'`
-    #
-    #   Internally, `SQLTable.select` does something like this (simplified):
-    #   ```python
-    #   # Inside SQLTable.select method:
-    #   # stmt_tc = None
-    #   # for col, val in condition_dict.items(): # col is "user_email", val is the actual email string
-    #   #     stmt_c = getattr(self.table.c, col) == val  # self.table.c.user_email == 'the_email@example.com'
-    #   #     if stmt_tc is None:
-    #   #         stmt_tc = select(self.table).where(stmt_c)
-    #   #     else:
-    #   #         stmt_tc = stmt_tc.where(stmt_c)
-    #   # df = pd.read_sql(stmt_tc, conn)
-    #   ```
+    # Normalize platform for comparison
+    normalized_platform = platform.lower()
 
-    logger.info(f"Checking for existing user with email: {user_email}")
-    df = db.user_table.select(condition_dict={"user_email": user_email})
-
-    # 4. Result Processing by `SQLTable.select`:
-    #   The `SQLTable.select` method executes the constructed SQL query against
-    #   the database using `pd.read_sql(stmt_tc, conn)`.
-    #   - If the query finds matching rows (i.e., users with that email),
-    #     `pd.read_sql` returns a DataFrame populated with those rows.
-    #   - If no rows match the condition, `pd.read_sql` returns an empty
-    #     DataFrame (it will have the correct column names from `user_table`
-    #     but 0 rows).
-
-    # 5. Returning the DataFrame:
-    #   The DataFrame `df` obtained from the `select` call is then returned by
-    #   `check_existing_user`.
-    if df.empty:
-        logger.info(f"No user found with email: {user_email}")
+    if normalized_platform == "google":
+        identifier_column_for_query = "user_email"
+        condition_dict[identifier_column_for_query] = platform_identifier
+    elif normalized_platform == "apple":
+        identifier_column_for_query = "userIdentifier"
+        condition_dict[identifier_column_for_query] = platform_identifier
     else:
-        logger.info(f"Found {len(df)} user(s) with email: {user_email}. User IDs: {df['user_id'].tolist() if 'user_id' in df else 'N/A'}")
-        # Note: UserTable has a composite primary key (user_id, user_email).
-        # This means multiple distinct 'user_id' values could theoretically be associated
-        # with the same 'user_email' if that's how data was inserted, and all such
-        # records would be returned. A common application design might enforce
-        # user_email uniqueness separately if a single user account per email is desired.
+        logger.warning(f"Unsupported platform '{platform}' for user check. Returning empty DataFrame.")
+        return pd.DataFrame()
 
+    df = db.user_table.select(condition_dict=condition_dict)
+
+    if df.empty:
+        logger.info(f"No user found on platform '{platform}' with {identifier_column_for_query}: '{platform_identifier}'")
+    else:
+        if len(df) > 1:
+            logger.warning(
+                f"Found {len(df)} users for platform '{platform}' with {identifier_column_for_query}: '{platform_identifier}'. "
+                f"This indicates a potential issue with data integrity or unique constraint enforcement. "
+                f"Using the first record. User IDs: {df['user_id'].tolist() if 'user_id' in df.columns else 'N/A'}"
+            )
+        elif 'user_id' in df.columns:
+             logger.info(
+                f"Found user on platform '{platform}' with {identifier_column_for_query}: '{platform_identifier}'. "
+                f"User ID: {df.iloc[0]['user_id']}"
+            )
+        else: # Should not happen if select returns data from UserTable
+            logger.warning(
+                f"Found user on platform '{platform}' with {identifier_column_for_query}: '{platform_identifier}', but 'user_id' column is missing in the result."
+            )
     return df
 
 
-def new_user_insert(db: SQLDatabaseManager, user_email: str, user_name: str) -> int:
+def new_user_insert(
+    db: 'SQLDatabaseManager',
+    platform: str,
+    user_name: str,       # Must be provided for new user
+    user_email: str,      # Must be provided for new user
+    db_user_identifier: str # The value to store in UserTable.userIdentifier
+) -> int:
     """
-    Inserts a new user into the user_table with a unique ID and registration timestamp.
+    Inserts a new user into the user_table.
+    Expects all necessary non-nullable fields to be provided.
 
     Args:
         db (SQLDatabaseManager): The database manager instance.
-        user_email (str): The email of the new user. This is part of the composite primary key.
+        platform (str): The platform ('google', 'apple').
         user_name (str): The name of the new user.
-    
+        user_email (str): The email address of the new user.
+        db_user_identifier (str): The value for the 'userIdentifier' DB column.
+                                   (For Google, this will be their email; for Apple, their Apple ID).
     Returns:
-        int: Returns 0 if successful. The underlying insert method (db.user_table_insert)
-             will cause sys.exit(-1) on database errors (e.g., integrity violations for PK).
+        int: Returns 0 if successful. Exits on error via db.user_table.insert.
     """
     try:
-        # Generate a unique user_id using UUID
         user_id = str(uuid.uuid4())
-        
-        # Get the current time for the 'registered' field
-        registered_time = datetime.now()
+        registered_time = datetime.now() 
 
-        # Prepare the data for insertion.
-        # 'last_login' and 'remark' are nullable and can be set to None for a new user.
-        insert_data = [
+        if not all([platform, user_name, user_email, db_user_identifier]):
+             logger.error("new_user_insert: Missing one or more required fields for new user creation "
+                          f"(platform, user_name, user_email, db_user_identifier). platform='{platform}', "
+                          f"name='{user_name}', email='{user_email}', db_id='{db_user_identifier}'")
+             
+        insert_data_list = [
             {
                 "user_id": user_id,
+                "platform": platform.lower(), # Normalize
+                "userIdentifier": db_user_identifier,
                 "user_name": user_name,
                 "user_email": user_email,
                 "registered": registered_time,
-                "last_login": None,  # New user has not logged in yet
-                "remark": None       # No initial remark
+                "last_login": None, # For a new user created via this specific function.
+                                    # handle_user_strict_previous_login will set DB last_login to current time.
+                "remark": None
             }
         ]
+
+        logger.info(f"Preparing to insert new user via new_user_insert: user_id='{user_id}', platform='{platform}', "
+                    f"DB_userIdentifier='{db_user_identifier}', user_email='{user_email}', name='{user_name}'")
+
         
-        logger.info(f"Preparing to insert new user: email='{user_email}', name='{user_name}', generated user_id='{user_id}'")
-        
-        # Call the user_table_insert method of SQLDatabaseManager.
-        # This method handles its own logging for success/failure and will call sys.exit
-        # on critical database errors (like primary key violations if the (user_id, user_email) pair already exists,
-        # or other database connection/operation issues).
-        return_code = db.user_table_insert(insert_data)
-        
+        return_code = db.user_table.insert(insert_data_list)
+
+        if return_code == 0:
+            logger.info(f"Successfully inserted new user with user_id='{user_id}' via new_user_insert.")
         return return_code
 
     except Exception as e:
-        # This catch block is primarily for unexpected errors occurring *before* the call
-        # to db.user_table_insert (e.g., if uuid.uuid4() or datetime.now() failed, though highly unlikely).
-        # Database operation errors are handled within db.user_table_insert -> SQLTable.insert.
-        logger.error(f"An unexpected error occurred in new_user_insert logic for email '{user_email}' before database operation: {e}")
-        # Consistent with other error handling in SQLTable, exiting here might be expected.
-        sys.exit(-1)
+        logger.error(f"An unexpected error occurred in new_user_insert for platform '{platform}', email '{user_email}': {e}")
+        sys.exit(-1)  # Exit on error, as per original spec
 
 
-def handle_user_strict_previous_login(db: SQLDatabaseManager, user_email: str, user_name: str) -> dict:
+def handle_user_strict_previous_login(
+    db: 'SQLDatabaseManager',
+    client_platform: str,
+    client_user_email: str, # Email from client, can be None for Apple reinstall
+    client_user_name: str ,  # Name from client, can be None for Apple reinstall
+    client_userIdentifier: str  # Apple User ID from client, None for Google
+) -> dict:
     """
-    Handles a user session based on a strict "last_login means previous login" rule.
-
-    - If the user (identified by user_email) exists:
-        - Fetches the current 'last_login' from DB (this is the actual previous login).
-        - Updates their 'last_login' timestamp in the DB to the current time (this current
-          login time will serve as the 'last_login' for their *next* session).
-        - Returns a dictionary with all database fields for the (first found) user.
-          The 'last_login' in this returned dict is the one fetched *before* the update
-          (i.e., the timestamp of their actual previous login). 'user_type' is 'existing'.
-    - If the user does not exist:
-        - Creates a new user record with a unique 'user_id'.
-        - 'registered' is set to current_time.
-        - 'last_login' in the DB is set to the current_time (this will be the 'previous login'
-           if they log in again; or None, see note below).
-        - Returns a dictionary with all fields of the new user, 'user_type': 'new'.
-          'last_login' in the returned dict is None.
+    Handles user login/registration with strict "last_login means previous login" rule.
 
     Args:
-        db (SQLDatabaseManager): The database manager instance.
-        user_email (str): The email of the user.
-        user_name (str): The name of the user.
+        db: SQLDatabaseManager instance.
+        client_platform (str): 'google' or 'apple'.
+        client_user_email (str ): Email from client.
+        client_user_name (str ): Name from client.
+        client_userIdentifier (str ): Apple User ID from client.
 
     Returns:
-        dict: A dictionary containing user information and 'user_type'.
+        dict: User information and 'user_type'.
     """
-    current_session_login_time = datetime.now() # Use timezone-aware datetime
-    logger.info(f"Handling user request (strict prev login) for email: {user_email}, name: {user_name} at {current_session_login_time}")
+    current_session_login_time = datetime.now() 
+    normalized_platform = client_platform.lower()
 
-    existing_user_df = check_existing_user(db, user_email)
+    logger.info(f"Handling user login: platform='{normalized_platform}', client_email='{client_user_email}', "
+                f"client_name='{client_user_name}', client_apple_id='{client_userIdentifier}' at {current_session_login_time}")
+
+    identifier_for_check = ""
+    db_user_identifier_value_for_new_user = "" # Value for UserTable.userIdentifier column if new user
+
+    if normalized_platform == "google":
+        if not client_user_email: # Google MUST provide email
+            logger.error("Google login attempt without email.")
+            return {"error": "Email is required for Google login.", "user_type": "error"}
+        identifier_for_check = client_user_email
+        db_user_identifier_value_for_new_user = client_user_email # For Google, email is also the DB userIdentifier
+    elif normalized_platform == "apple":
+        if not client_userIdentifier: # Apple MUST provide userIdentifier
+            logger.error("Apple login attempt without userIdentifier.")
+            return {"error": "userIdentifier is required for Apple login.", "user_type": "error"}
+        identifier_for_check = client_userIdentifier
+        db_user_identifier_value_for_new_user = client_userIdentifier # For Apple, this is the Apple ID
+    else:
+        logger.error(f"Unsupported platform: {normalized_platform}")
+        return {"error": f"Unsupported platform: {normalized_platform}", "user_type": "error"}
+
+    existing_user_df = check_existing_user(db, normalized_platform, identifier_for_check)
 
     if not existing_user_df.empty:
-        # User Exists
-        logger.info(f"User with email '{user_email}' found. Processing as existing user (strict prev login).")
-
-        # We'll process the first record found for the return value,
-        # but update all records matching the email.
+        # ----- USER EXISTS -----
+        if len(existing_user_df) > 1:
+            logger.warning(f"Multiple users found for platform='{normalized_platform}', id_check='{identifier_for_check}'. Using first record.")
         
-        actual_previous_login_time_for_return = None # Initialize
-        first_record_processed = False
-        user_info_to_return = {}
+        user_data_row = existing_user_df.iloc[0]
+        user_id_from_db = user_data_row['user_id']
+        logger.info(f"User found: user_id='{user_id_from_db}'. Processing as existing user.")
 
-        for index, row_data in existing_user_df.iterrows():
-            user_id_from_db = row_data['user_id']
-            
-            # Fetch the actual previous login time from this specific record
-            # The 'last_login' column in UserTable should be DateTime, nullable=True
-            db_last_login_value = row_data['last_login']
+        actual_previous_login_time_for_return = user_data_row['last_login']
+        user_info_to_return = user_data_row.to_dict() # Start with all DB data
 
-            if not first_record_processed:
-                actual_previous_login_time_for_return = db_last_login_value
-                # Prepare the base of the user_info_to_return from the first record
-                user_info_to_return = row_data.to_dict()
-                first_record_processed = True
-            
-            # Update the 'last_login' in the DB for this record to the current session's login time.
-            # This current_session_login_time will become the 'previous_login_time' for the *next* login.
-            primary_key_values = {"user_id": user_id_from_db, "user_email": user_email}
-            db.user_table.update_one_cell(
-                column_name="last_login",
-                new_value=current_session_login_time,
-                primary_key_values=primary_key_values
-            )
-            logger.info(f"Updated DB last_login for user_id: {user_id_from_db}, email: {user_email} to {current_session_login_time} (this session's time). Previous was: {db_last_login_value}")
+        # Update last_login in DB to current time
+        pk_for_update = {"user_id": user_id_from_db}
+        db.user_table.update_one_cell(
+            column_name="last_login",
+            new_value=current_session_login_time,
+            primary_key_values=pk_for_update
+        )
+        logger.info(f"Updated DB last_login for user_id='{user_id_from_db}' to {current_session_login_time}.")
 
-        # Finalize the dictionary to return using data from the first matched record
+        # For existing users, client_user_name and client_user_email might be new/updated
+        # or absent (e.g. Apple reinstall). Only update if provided by client.
+        updates_for_existing_user = {}
+        
+        if client_user_name is not None and user_info_to_return.get("user_name") != client_user_name:
+            updates_for_existing_user["user_name"] = client_user_name
+            user_info_to_return["user_name"] = client_user_name # Reflect update in return
+            logger.info(f"Updating user_name for user_id='{user_id_from_db}' to '{client_user_name}'.")
+        
+        if client_user_email is not None and user_info_to_return.get("user_email") != client_user_email:
+            # Special care for Google: user_email is part of unique key and identifier_for_check.
+            # Changing it for an existing Google user based on an old email lookup could be problematic.
+            # For Apple, email can be updated more freely if provided.
+            if normalized_platform == "apple":
+                updates_for_existing_user["user_email"] = client_user_email
+                user_info_to_return["user_email"] = client_user_email # Reflect update in return
+                logger.info(f"Updating user_email for Apple user_id='{user_id_from_db}' to '{client_user_email}'.")
+            elif normalized_platform == "google" and identifier_for_check == client_user_email:
+                # If it's Google and the new email is the same as the one we looked up, no change needed.
+                # If they are trying to *change* their email, that's a more complex flow not handled here.
+                pass
+            else: # Google user, client_user_email is different from lookup email
+                 logger.warning(f"Google user '{identifier_for_check}' attempted to provide a different email "
+                                f"'{client_user_email}'. Email update for Google primary identifier not supported in this flow.")
+
+
+        if updates_for_existing_user:
+            db.user_table.update(condition_columns=["user_id"], update_array=[{"user_id": user_id_from_db, **updates_for_existing_user}])
+
         user_info_to_return["user_type"] = "existing"
         user_info_to_return["last_login"] = actual_previous_login_time_for_return # This is the key change for "existing"
 
-        if user_info_to_return.get("user_name") != user_name:
-            logger.warning(
-                f"Provided user_name '{user_name}' differs from DB user_name "
-                f"'{user_info_to_return.get('user_name')}' for user_id: {user_info_to_return.get('user_id')}, email: {user_email}. "
-                f"DB name not updated."
-            )
-
-        logger.info(f"Returning existing user data for email: {user_email}, user_id: {user_info_to_return.get('user_id')}. Actual previous login: {actual_previous_login_time_for_return}")
+        logger.info(f"Returning existing user data for user_id='{user_id_from_db}'. Actual previous login: {actual_previous_login_time_for_return}")
         return user_info_to_return
 
     else:
-        # User Does Not Exist - Create a new user
-        logger.info(f"User with email '{user_email}' not found. Creating new user (strict prev login).")
+        # ----- NEW USER -----
+        logger.info(f"User not found with platform='{normalized_platform}', id_check='{identifier_for_check}'. Creating new user.")
         
+        # For a new user, we NEED user_name and user_email (as they are NOT NULL in DB)
+        if client_user_name is None:
+            logger.error(f"Cannot create new {normalized_platform} user: user_name not provided by client for id_check='{identifier_for_check}'.")
+            return {"error": "user_name is required to create a new user account.", "user_type": "error"}
+        if client_user_email is None:
+            logger.error(f"Cannot create new {normalized_platform} user: user_email not provided by client for id_check='{identifier_for_check}'.")
+            return {"error": "user_email is required to create a new user account.", "user_type": "error"}
+
         new_user_id = str(uuid.uuid4())
         
-        # For a brand new user:
-        # - 'registered' is current_session_login_time.
-        # - 'last_login' in the DB:
-        #   Option 1: Set to current_session_login_time. If they log in again, this becomes their "previous login".
-        #   Option 2: Set to None. If they log in again, their "previous login" would be None.
-        #   The prompt "set current login as last login" (for the DB) from the *previous* interpretation
-        #   points towards Option 1 for consistency. Let's stick with that for DB.
-        
-        new_user_data_for_db = {
+        new_user_data_for_db_insert = {
             "user_id": new_user_id,
-            "user_name": user_name,
-            "user_email": user_email,
+            "platform": normalized_platform,
+            "userIdentifier": db_user_identifier_value_for_new_user,
+            "user_name": client_user_name,       # Use name from client
+            "user_email": client_user_email,     # Use email from client
             "registered": current_session_login_time,
-            "last_login": current_session_login_time, # This session's time, will be "previous" on next login
+            "last_login": current_session_login_time, # DB last_login is current time for new user
             "remark": None
         }
         
-        return_code = db.user_table.insert([new_user_data_for_db])
+        # Directly call db.user_table.insert here
+        return_code = db.user_table.insert([new_user_data_for_db_insert])
         
-        if return_code != 0:
-            logger.error(f"Failed to insert new user (strict) with email: {user_email}. Insert returned: {return_code}")
-            return {"error": "Failed to create new user", "user_type": "error"}
+        if return_code != 0: # Should not happen if SQLTable.insert calls sys.exit
+            logger.error(f"Failed to insert new user (platform='{normalized_platform}', id_check='{identifier_for_check}'). Insert returned: {return_code}")
+            return {"error": "Failed to create new user record in database.", "user_type": "error"}
 
-        logger.info(f"New user created with user_id: {new_user_id}, email: {user_email}. DB last_login set to {current_session_login_time}")
+        logger.info(f"New user created: user_id='{new_user_id}', platform='{normalized_platform}', "
+                    f"DB_userIdentifier='{db_user_identifier_value_for_new_user}', email='{client_user_email}'. "
+                    f"DB last_login set to {current_session_login_time}.")
         
-        # Prepare the dictionary to return for the new user
-        output_data_for_new_user = new_user_data_for_db.copy()
-        output_data_for_new_user["last_login"] = None # For a new user, the "previous" login is None in the output.
+        output_data_for_new_user = new_user_data_for_db_insert.copy()
+        output_data_for_new_user["last_login"] = None # Output last_login is None for new user, as per original spec
         output_data_for_new_user["user_type"] = "new"
         
-        logger.info(f"Returning new user data for email: {user_email}, user_id: {new_user_id} (output last_login is None)")
+        logger.info(f"Returning new user data for user_id='{new_user_id}'. Output last_login is None.")
         return output_data_for_new_user

@@ -46,7 +46,7 @@ logger.add(
 )
 # --- End Loguru Setup ---
 
-
+MAX_FILE_SIZE = 1 * 1024 * 1024
 # Define a flask app
 app = Flask(__name__)
 # initialize ocr
@@ -126,13 +126,13 @@ def post_process_words_data(words):
 def ocr_process(): # Renamed from index to be more specific
     if request.method == 'POST':
         request_id = str(uuid.uuid4()) # For tracing
-        logger.info(f"Request ID: {request_id} - Received OCR request at {datetime.now(timezone.utc)}")
+        logger.info(f"Request ID: {request_id} - Received OCR request at {datetime.now()}")
         
         if ocr is None:
             logger.error(f"Request ID: {request_id} - OCR service not available.")
             return jsonify({"status": "failed", "error": consttruct_error("OCR Service Unavailable", "SERVICE_UNAVAILABLE", "503", "The OCR engine is not initialized.", "Please contact support.")}), 503
 
-        log_details = {"req-id": request_id, "req-time": datetime.now(timezone.utc).isoformat()}
+        log_details = {"req-id": request_id, "req-time": datetime.now().isoformat()}
         
         try:
             save_start = time()
@@ -149,6 +149,26 @@ def ocr_process(): # Renamed from index to be more specific
                 logger.warning(f"Request ID: {request_id} - No selected file (empty filename).")
                 return jsonify({"status": "failed", "error": consttruct_error("No file selected.", "EMPTY_FILENAME", "400", "No file was selected for upload.", "Please select a file to upload.")}), 400
 
+            # --- File Size Check ---
+            # Move to the end of the file to get its size
+            f.seek(0, os.SEEK_END)
+            file_length = f.tell()
+            # Reset the file pointer to the beginning for saving
+            f.seek(0)
+
+            if file_length > MAX_FILE_SIZE:
+                log_details["error"] = f"file too large: {file_length} bytes"
+                logger.warning(f"Request ID: {request_id} - File too large: {file_length} bytes. Limit is {MAX_FILE_SIZE} bytes. Details: {log_details}")
+                # You could use HTTP status 413 Payload Too Large, but 400 is also common for client errors.
+                return jsonify({"status": "failed", "error": consttruct_error(
+                    "File too large.",
+                    "FILE_TOO_LARGE",
+                    "413", # Or "413"
+                    f"File size ({file_length / (1024*1024):.2f}MB) exceeds the limit of {MAX_FILE_SIZE / (1024*1024):.0f}MB.",
+                    f"Please upload a file smaller than {MAX_FILE_SIZE / (1024*1024):.0f}MB."
+                )}), 413
+            
+            # --- End File Size Check ---
             filename = secure_filename(f.filename)
             file_path = os.path.join(image_dir, filename)
             
@@ -165,6 +185,13 @@ def ocr_process(): # Renamed from index to be more specific
 
             proc_start = time()
             words = ocr(file_path, retun_text_data_only=True) # Assuming ocr() can handle path
+            if words is None:
+                log_details["error"] = "OCR processing returned None."
+                logger.error(f"Request ID: {request_id} - OCR processing failed. Details: {log_details}")
+                return jsonify({"status": "failed", "error": consttruct_error("OCR processing failed.", "OCR_PROCESSING_ERROR", "500", "OCR engine returned no data.", "Please try again with a different image or contact support.")}), 500
+            
+            log_details["ocr-words-count"] = len(words)
+            logger.debug(f"Request ID: {request_id} - OCR processing returned {len(words)} words.")
             text = post_process_words_data(words)
             log_details["ocr-processing-time"] = round(time() - proc_start, 2)
             
@@ -188,13 +215,13 @@ def ocr_process(): # Renamed from index to be more specific
     return jsonify({"message": "This is the OCR processing endpoint. Please use POST to submit an image.", "status": "info"}), 200
 
 
-@app.route('/user', methods=['POST']) # Typically user creation/login is POST only
+@app.route('/user', methods=['POST'])
 @cross_origin()
-def user_session_manager(): # Renamed from index for clarity
-    request_id = str(uuid.uuid4()) # For tracing
-    logger.info(f"Request ID: {request_id} - Received /user request at {datetime.now(timezone.utc)}")
+def user_session_manager():
+    request_id = str(uuid.uuid4())
+    logger.info(f"Request ID: {request_id} - Received /user request at {datetime.now()}")
 
-    if db is None:
+    if db is None: # Assuming 'db' is your SQLDatabaseManager instance
         logger.error(f"Request ID: {request_id} - Database service not available.")
         return jsonify({"status": "failed", "error": consttruct_error("Database Service Unavailable", "SERVICE_UNAVAILABLE", "503", "The database connection is not initialized.", "Please contact support.")}), 503
 
@@ -204,31 +231,49 @@ def user_session_manager(): # Renamed from index for clarity
 
     try:
         data = request.get_json()
-        user_email = data.get("user_email")
-        user_name = data.get("user_name")
+        logger.debug(f"Request ID: {request_id} - Received data: {data}")
 
-        if not user_email or not user_name:
-            logger.warning(f"Request ID: {request_id} - Missing user_email or user_name in request. Data: {data}")
-            missing_fields = []
-            if not user_email: missing_fields.append("user_email")
-            if not user_name: missing_fields.append("user_name")
-            return jsonify({"status": "failed", "error": consttruct_error("Missing required fields.", "BAD_REQUEST", "400", f"Required fields missing: {', '.join(missing_fields)}", "Please provide both user_email and user_name.")}), 400
+        client_platform_from_req = data.get("platform")
+        client_user_email_from_req = data.get("user_email")       # Can be None/empty
+        client_user_name_from_req = data.get("user_name")         # Can be None/empty
+        client_userIdentifier_from_req = data.get("userIdentifier") # Can be None/empty, primarily for Apple
 
-        logger.info(f"Request ID: {request_id} - Processing user: email='{user_email}', name='{user_name}'")
-
-        # Call the user handling logic from your database manager
-        user_info = handle_user_strict_previous_login(db, user_email, user_name)
+        # --- Basic Platform Validation ---
+        if not client_platform_from_req or client_platform_from_req.lower() not in ["google", "apple"]:
+            logger.warning(f"Request ID: {request_id} - Invalid or missing platform. Provided: '{client_platform_from_req}'")
+            return jsonify({"status": "failed", "error": consttruct_error("Invalid or missing platform.", "BAD_REQUEST", "400", "Platform must be 'google' or 'apple'.", "Ensure 'platform' field is correctly provided.")}), 400
         
-        # handle_user_strict_previous_login might return an error dict itself
+        normalized_platform = client_platform_from_req.lower()
+
+        # --- Call the updated user handling logic ---
+        # The handle_user_strict_previous_login function now internally decides
+        # what is required based on the platform and if it's a new vs existing user.
+        user_info = handle_user_strict_previous_login(
+            db=db,
+            client_platform=normalized_platform,
+            client_user_email=client_user_email_from_req,
+            client_user_name=client_user_name_from_req,
+            client_userIdentifier=client_userIdentifier_from_req
+        )
+        
         if user_info.get("user_type") == "error":
              logger.error(f"Request ID: {request_id} - Error from handle_user_strict_previous_login: {user_info.get('error')}")
-             return jsonify({"status":"failed", "error": consttruct_error(user_info.get('error', "User processing failed"), "USER_PROCESSING_ERROR", "500", "Failed during user creation or update logic.", "Please try again or contact support."), "request_id": request_id}), 500
+             # The status code here might depend on the nature of the error from handle_user_strict_previous_login
+             # If it's due to missing required fields for a *new* user, 400 might be appropriate.
+             # If it's a DB failure, 500.
+             # For now, let's assume USER_PROCESSING_ERROR implies a server-side logic or DB issue.
+             error_message = user_info.get('error', "User processing failed")
+             error_details = f"Failed during user creation or update for platform {normalized_platform}."
+             if "required" in error_message.lower(): # More specific for client errors
+                return jsonify({"status":"failed", "error": consttruct_error(error_message, "BAD_REQUEST", "400", error_details, "Please ensure all required fields for your platform are provided."), "request_id": request_id}), 400
+             else:
+                return jsonify({"status":"failed", "error": consttruct_error(error_message, "USER_PROCESSING_ERROR", "500", error_details, "Please try again or contact support."), "request_id": request_id}), 500
 
 
         # Convert datetime objects to ISO format string for JSON serialization
-        if 'registered' in user_info and isinstance(user_info['registered'], datetime):
+        if 'registered' in user_info and isinstance(user_info.get('registered'), datetime):
             user_info['registered'] = user_info['registered'].isoformat()
-        if 'last_login' in user_info and user_info['last_login'] is not None and isinstance(user_info['last_login'], datetime):
+        if 'last_login' in user_info and user_info.get('last_login') is not None and isinstance(user_info.get('last_login'), datetime):
             user_info['last_login'] = user_info['last_login'].isoformat()
         
         logger.info(f"Request ID: {request_id} - Successfully processed user. Type: {user_info.get('user_type')}. User ID: {user_info.get('user_id')}")
@@ -237,7 +282,6 @@ def user_session_manager(): # Renamed from index for clarity
     except Exception as e:
         logger.exception(f"Request ID: {request_id} - An unexpected error occurred in /user endpoint: {e}")
         return jsonify({"status": "failed", "error": consttruct_error("Internal server error.", "INTERNAL_SERVER_ERROR", "500", str(e), "An unexpected error occurred. Please try again or contact support."), "request_id": request_id}), 500
-
 
 if __name__ == '__main__':
     host = "0.0.0.0"
